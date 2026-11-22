@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alevle Yarış – Antalya</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+:root{--bg:#14171c;--panel:#1c2027;--line:#2d333d;--text:#e9e6e1;--muted:#98a0ac;--ember:#ff7a2f;--water:#4aa8ff;--ok:#5fd07a;--bad:#ff5252}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:"Trebuchet MS",system-ui,sans-serif}
+#app{display:grid;grid-template-columns:290px 1fr;height:100%}
+#side{background:var(--panel);border-right:1px solid var(--line);padding:16px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+h1{margin:0;font-size:1.35rem}
+h1 small{display:block;color:var(--muted);font-weight:400;font-size:.8rem;margin-top:2px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px}
+.stat span{display:block;color:var(--muted);font-size:.75rem}
+.stat b{font-size:1.4rem}
+#time.low{color:var(--bad)}
+.wind{display:flex;align-items:center;gap:12px;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px}
+#arrow{font-size:2rem;color:var(--ember);display:inline-block;transform:rotate(135deg)}
+.tools{display:flex;flex-direction:column;gap:8px}
+.tool{background:var(--bg);color:var(--text);border:2px solid var(--line);border-radius:6px;padding:10px;text-align:left;cursor:pointer;font:inherit}
+.tool b{display:block}
+.tool small{color:var(--muted)}
+.tool.active{border-color:var(--ember)}
+.tool:disabled{opacity:.4;cursor:not-allowed}
+.tool:focus-visible,#go:focus-visible{outline:2px solid var(--water);outline-offset:2px}
+#hint{color:var(--muted);font-size:.85rem;min-height:2.6em}
+.bars{font-size:.8rem;color:var(--muted)}
+.bar{height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin:3px 0 8px}
+.bar i{display:block;height:100%;width:100%;background:var(--ok);transition:width .3s}
+#map{height:100%;background:#0d0f13}
+.dark-tiles{filter:invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.6)}
+#ov{position:fixed;inset:0;background:#000b;z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px}
+#card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:26px;max-width:460px;line-height:1.55}
+#card h2{margin:0 0 8px;color:var(--ember)}
+#card p{margin:6px 0;color:var(--muted)}
+#go{background:var(--ember);color:#1a1005;border:0;border-radius:6px;padding:11px 24px;font:inherit;font-weight:700;cursor:pointer;margin-top:12px}
+@media (max-width:760px){#app{grid-template-columns:1fr;grid-template-rows:auto 1fr}#side{border-right:0;border-bottom:1px solid var(--line);padding:10px;gap:8px}.wind,.bars,h1 small{display:none}#map{min-height:55vh}}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <h1>Alevle Yarış<small>Antalya · Başlangıç görevi</small></h1>
+    <div class="stats">
+      <div class="stat"><span>Süre</span><b id="time">90</b></div>
+      <div class="stat"><span>Puan</span><b id="score">0</b></div>
+    </div>
+    <div class="wind"><span id="arrow">➤</span><div><b>Kuzeydoğu rüzgârı</b><br><small>Hız: orta</small></div></div>
+    <div class="tools">
+      <button class="tool" id="t-water" data-tool="water"><b>Su müdahalesi (<span id="n-water">3</span>)</b><small>Tıkla: yangını söndür, alanı korumaya al</small></button>
+      <button class="tool" id="t-break" data-tool="break"><b>Yangın hattı (<span id="n-break">2</span>)</b><small>İki nokta seç: aradaki ormanı kes</small></button>
+    </div>
+    <div id="hint">Bir araç seç ve haritaya tıkla.</div>
+    <div class="bars">
+      Orman durumu<div class="bar"><i id="forestBar"></i></div>
+      Yanan alan: <span id="burnTxt">0</span> hücre
+    </div>
+  </aside>
+  <div id="map"></div>
+</div>
+<div id="ov"><div id="card">
+  <h2>Antalya yangını</h2>
+  <p>Kuzeydoğuda yangın başladı, rüzgâr alevleri Güllük Dağı (Termessos) Milli Parkı'na taşıyor.</p>
+  <p>90 saniyen, 3 su müdahalen ve 2 yangın hattın var. Park yanmadan yangını durdur ya da süre bitene kadar oyalamayı başar.</p>
+  <button id="go">Göreve başla</button>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+// ---------- Sabitler ----------
+const N = 40;                                        // 40x40 hücre
+const BOUNDS = { s: 36.95, n: 37.35, w: 30.30, e: 30.80 };   // Antalya'nın kuzeyi (kara, dağlık orman bölgesi)
+const CH = (BOUNDS.n - BOUNDS.s) / N, CW = (BOUNDS.e - BOUNDS.w) / N;
+const T = { NON: 0, FOREST: 1, FIRE: 2, BURNED: 3, SAFE: 4, BREAK: 5, VILLAGE: 6 };
+const COLORS = {
+  1: [46, 125, 50, 150], 2: [255, 90, 20, 235], 3: [25, 25, 25, 190],
+  4: [74, 168, 255, 140], 5: [235, 235, 235, 230], 6: [255, 214, 64, 240]
+};
+const MISSION = {
+  duration: 90, water: 3, lines: 2, radius: 3,
+  wind: { dx: -0.71, dy: 0.71, strength: 1.3 },       // dx: doğuya(+) / batıya(-), dy: güneye(+)
+  start: [28, 6], village: [14, 34], parkName: "Güllük Dağı (Termessos) Milli Parkı", tickMs: 800, burnTicks: 5, baseP: 0.085
+};
+const $ = id => document.getElementById(id);
+
+// ---------- CLOSURE: kaynak yöneticisi (kalan hakları dışarıdan doğrudan değiştiremezsin) ----------
+function createResources(water, lines) {
+  let w = water, l = lines;
+  return {
+    use(kind) { if (kind === "water" && w > 0) { w--; return true; } if (kind === "break" && l > 0) { l--; return true; } return false; },
+    left(kind) { return kind === "water" ? w : l; }
+  };
+}
+
+// ---------- Harita ----------
+const map = L.map("map", { minZoom: 8, maxZoom: 13, zoomSnap: 0.25 });
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", { attribution: "Tiles &copy; Esri", maxZoom: 13 }).addTo(map);
+function focusMap() {                                  // oyun alanını ortala ve ekran boyuna göre yakınlaştır
+  map.invalidateSize();
+  const z = map.getSize().y < 760 ? 10.5 : 11;
+  map.setView([(BOUNDS.s + BOUNDS.n) / 2, (BOUNDS.w + BOUNDS.e) / 2], z, { animate: false });
+}
+focusMap();
+const cv = document.createElement("canvas"); cv.width = cv.height = N;
+const ctx = cv.getContext("2d");
+let overlay = null;
+const marks = L.layerGroup().addTo(map);
+
+// ---------- Oyun durumu ----------
+let grid, age, res, tool = null, firstPt = null, timeLeft, tickTimer, clockTimer, running = false, forestTotal, forestMask, score = 0, villageHit = false;
+
+function makeTerrain() {                              // rastgele ama doğal görünen orman lekeleri
+  const ph = Array.from({ length: 6 }, () => Math.random() * 6.28);
+  const f = (x, y) => Math.sin(x * .21 + ph[0]) + Math.sin(y * .27 + ph[1]) + Math.sin((x + y) * .17 + ph[2]) +
+                      Math.sin((x - y) * .23 + ph[3]) + .6 * Math.sin(x * .6 + ph[4]) * Math.sin(y * .6 + ph[5]);
+  grid = Array.from({ length: N }, (_, y) => Array.from({ length: N }, (_, x) => f(x, y) > -1.1 ? T.FOREST : T.NON));
+  age = Array.from({ length: N }, () => new Array(N).fill(0));
+  const [sx, sy] = MISSION.start, [vx, vy] = MISSION.village;
+  for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) grid[sy + dy][sx + dx] = T.FOREST;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) grid[vy + dy][vx + dx] = T.VILLAGE;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) grid[sy + dy][sx + dx] = T.FIRE;
+  // Başlangıçta gerçekten orman olan hücreleri kaydet.
+  forestMask = grid.map(row => row.map(cell => cell === T.FOREST));
+  forestTotal = forestMask.flat().filter(Boolean).length;
+}
+
+function draw() {                                     // hücreleri canvas'a çiz, haritaya imageOverlay olarak koy
+  const img = ctx.createImageData(N, N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const c = COLORS[grid[y][x]]; if (!c) continue;
+    img.data.set(c, (y * N + x) * 4);
+  }
+  ctx.putImageData(img, 0, 0);
+  const url = cv.toDataURL();
+  if (overlay) overlay.setUrl(url);
+  else { overlay = L.imageOverlay(url, [[BOUNDS.s, BOUNDS.w], [BOUNDS.n, BOUNDS.e]], { interactive: false }).addTo(map); overlay.getElement().style.imageRendering = "pixelated"; }
+}
+
+const count = t => grid.flat().filter(c => c === t).length;
+const savedForest = () => {
+  let total = 0;
+
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      if (
+        forestMask[y][x] &&
+        (grid[y][x] === T.FOREST ||
+         grid[y][x] === T.SAFE ||
+         grid[y][x] === T.BREAK)
+      ) {
+        total++;
+      }
+    }
+  }
+
+  return total;
+};
+function updateHud() {
+  score = Math.round(savedForest() / forestTotal * 1000);
+  $("time").textContent = timeLeft; $("time").classList.toggle("low", timeLeft <= 15);
+  $("score").textContent = score;
+  $("n-water").textContent = res.left("water"); $("n-break").textContent = res.left("break");
+  $("t-water").disabled = res.left("water") === 0; $("t-break").disabled = res.left("break") === 0;
+  $("burnTxt").textContent = count(T.FIRE);
+  $("forestBar").style.width = Math.min(100, Math.round(savedForest() / forestTotal * 100)) + "%";
+}
+
+// ---------- Yangın simülasyonu ----------
+const DIRS = [[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+function tick() {
+  const next = grid.map(r => r.slice()), w = MISSION.wind;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    if (grid[y][x] !== T.FIRE) continue;
+    if (++age[y][x] > MISSION.burnTicks) { next[y][x] = T.BURNED; continue; }
+    for (const [dx, dy] of DIRS) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+      const t = grid[ny][nx]; if (t !== T.FOREST && t !== T.VILLAGE) continue;
+      const align = (dx * w.dx + dy * w.dy) / Math.hypot(dx, dy);        // rüzgâr yönüyle hizalanma (-1..1)
+      const p = Math.max(0.02, MISSION.baseP * (1 + w.strength * align));
+      if (Math.random() < p) { if (t === T.VILLAGE) villageHit = true; else next[ny][nx] = T.FIRE; }
+    }
+  }
+  grid = next; draw(); updateHud();
+  if (villageHit) return end("Milli park yandı!", false);
+  if (!grid.flat().includes(T.FIRE)) end("Yangın söndü!", true);
+}
+
+// ---------- Araçlar ----------
+function cellOf(ll) { return [Math.floor((ll.lng - BOUNDS.w) / CW), Math.floor((BOUNDS.n - ll.lat) / CH)]; }
+function center(x, y) { return [BOUNDS.n - (y + .5) * CH, BOUNDS.w + (x + .5) * CW]; }
+
+function useWater(x, y) {
+  const r = MISSION.radius;
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    const cx = x + dx, cy = y + dy;
+    if (cx < 0 || cy < 0 || cx >= N || cy >= N || dx * dx + dy * dy > r * r) continue;
+    if (grid[cy][cx] === T.FIRE || grid[cy][cx] === T.FOREST) grid[cy][cx] = T.SAFE;
+  }
+  L.circle(center(x, y), { radius: r * CH * 111000, color: "#4aa8ff", weight: 1, fillOpacity: .08 }).addTo(marks);
+}
+function useBreak(a, b) {                              // Bresenham çizgisi, kalınlaştırılmış (çapraz sızıntıyı önlemek için)
+  let [x0, y0] = a; const [x1, y1] = b;
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  while (true) {
+    for (const [ox, oy] of [[0,0],[1,0],[0,1]]) {
+      const cx = x0 + ox, cy = y0 + oy;
+      if (cx >= 0 && cy >= 0 && cx < N && cy < N && (grid[cy][cx] === T.FOREST || grid[cy][cx] === T.NON)) grid[cy][cx] = T.BREAK;
+    }
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+}
+
+// ---------- OLAY İŞLEYİCİ 1: görev başlatma ----------
+$("go").addEventListener("click", startGame);
+
+// ---------- OLAY İŞLEYİCİ 2: araç seçimi (butonlar) ----------
+document.querySelectorAll(".tool").forEach(b => b.addEventListener("click", () => {
+  if (!running) return;
+  tool = b.dataset.tool; firstPt = null;
+  document.querySelectorAll(".tool").forEach(o => o.classList.toggle("active", o === b));
+  $("hint").textContent = tool === "water" ? "Yangının yakınına tıkla." : "Hattın ilk noktasını seç.";
+}));
+
+// ---------- OLAY İŞLEYİCİ 3: harita tıklaması ----------
+map.on("click", e => {
+  if (!running || !tool) return;
+  const [x, y] = cellOf(e.latlng);
+  if (x < 0 || y < 0 || x >= N || y >= N) return;
+  if (tool === "water") {
+    if (!res.use("water")) return;
+    useWater(x, y); $("hint").textContent = "Su bırakıldı.";
+  } else if (!firstPt) {
+    firstPt = [x, y]; $("hint").textContent = "Hattın ikinci noktasını seç."; return;
+  } else {
+    if (!res.use("break")) return;
+    useBreak(firstPt, [x, y]); firstPt = null; $("hint").textContent = "Yangın hattı çekildi.";
+  }
+  if (res.left(tool) === 0) { tool = null; document.querySelectorAll(".tool").forEach(o => o.classList.remove("active")); }
+  draw(); updateHud();
+});
+
+// ---------- Oyun akışı ----------
+function startGame() {
+  makeTerrain(); res = createResources(MISSION.water, MISSION.lines);
+  timeLeft = MISSION.duration; villageHit = false; running = true; tool = null; firstPt = null; marks.clearLayers();
+  document.querySelectorAll(".tool").forEach(o => o.classList.remove("active"));
+  $("ov").style.display = "none"; $("hint").textContent = "Bir araç seç ve haritaya tıkla.";
+  L.marker(center(...MISSION.village), { icon: L.divIcon({ html: "🌲", className: "", iconSize: [24, 24] }), interactive: false }).bindTooltip(MISSION.parkName, { permanent: true, direction: "top", offset: [0, -8] }).addTo(marks);
+  focusMap();
+  draw(); updateHud();
+  clearInterval(tickTimer); clearInterval(clockTimer);
+  tickTimer = setInterval(tick, MISSION.tickMs);
+  clockTimer = setInterval(() => { timeLeft--; updateHud(); if (timeLeft <= 0) end("Süre doldu, milli park kurtuldu!", true); }, 1000);
+}
+
+function end(title, won) {
+  if (!running) return;
+  running = false; clearInterval(tickTimer); clearInterval(clockTimer);
+  const final = won ? score + timeLeft * 5 + 500 : Math.round(score * 0.3);
+  const forest = Math.round(savedForest() / forestTotal * 100);
+  $("card").innerHTML = `<h2>${title}</h2><p>Kurtarılan orman: <b>%${forest}</b></p>` +
+    `<p>Kalan süre: <b>${timeLeft} sn</b></p><p>Toplam puan: <b>${final}</b></p><button id="go">Tekrar dene</button>`;
+  $("go").addEventListener("click", startGame);
+  $("ov").style.display = "flex";
+}
+</script>
+</body>
+</html>
